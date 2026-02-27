@@ -79,13 +79,7 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 			return;
 		}
 
-		// Load system instructions for AI polishing
-		const systemPrompt = await fs.readFile('./AGENT_PROMPT.md', 'utf-8');
-		const aiService = new AiService(
-			process.env['OPENROUTER_API_KEY'] || '',
-			process.env['MODEL_NAME'] || 'google/gemini-2.5-flash',
-			systemPrompt
-		);
+		// Polishing is disabled as per user request
 
 		setCompilations(
 			texFiles.map((f) => ({ name: path.join(path.basename(path.dirname(f)), path.basename(f)), status: 'pending' }))
@@ -93,20 +87,24 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 
 		setStatus(`Polishing and Compiling ${texFiles.length} files...`);
 		for (const texPath of texFiles) {
-			const fileName = path.join(path.basename(path.dirname(texPath)), path.basename(texPath));
+			const pdfDir = path.dirname(path.dirname(texPath));
+			const pdfName = path.basename(pdfDir);
+			const baseName = path.basename(texPath, '.tex');
+			const displayLabel = `${pdfName}/${baseName}.docx`;
 
-			// Clean and Polish before recompiling
+			// Clean before recompiling
 			const originalContent = await fs.readFile(texPath, 'utf8');
 			const initialClean = AssemblyService.cleanLatex(originalContent);
-			const polished = await aiService.polishLatex(initialClean);
 
-			// Prepend header programmatically
-			const header = AssemblyService.generateHeader(path.basename(path.dirname(texPath)), path.basename(texPath, '.tex'));
-			await fs.writeFile(texPath, header + polished);
+			// Prepend header programmatically - using path parts for context
+			const header = AssemblyService.generateHeader(pdfName, baseName);
+			await fs.writeFile(texPath, header + initialClean);
 
-			await compilerService.compile(texPath);
+			const docxPath = path.join(pdfDir, `${baseName}.docx`);
+			await compilerService.compile(texPath, docxPath);
+
 			setCompilations((prev) =>
-				prev.map((c) => (c.name === fileName ? { ...c, status: 'done' } : c))
+				prev.map((c) => (c.name === displayLabel ? { ...c, status: 'done' } : c))
 			);
 		}
 
@@ -121,7 +119,6 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 		await stateService.load();
 
 		const pdfService = new PdfService(inputDir, tempDir);
-		const assemblyService = new AssemblyService(outputDir);
 		const compilerService = new CompilerService(templatePath);
 
 		// Load system instructions
@@ -143,8 +140,20 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 			setTotalPages(imagePaths.length);
 			setStatus('Splitting PDF into images... [Done]');
 
-			const chunkSize = parseInt(process.env['CHUNK_SIZE'] || '10', 10);
-			let rawChunks = pdfService.chunkImages(imagePaths, chunkSize);
+			setStatus('Splitting PDF into subjects by boundary...');
+			let rawChunks = await pdfService.splitByBoundary(imagePaths);
+
+			// Preview chunks for inspection
+			const previewDir = path.join(tempDir, 'preview');
+			await fs.emptyDir(previewDir);
+			for (const chunk of rawChunks) {
+				const chunkDir = path.join(previewDir, `subject_${chunk.index}`);
+				await fs.ensureDir(chunkDir);
+				for (let i = 0; i < chunk.imagePaths.length; i++) {
+					const imgPath = chunk.imagePaths[i]!;
+					await fs.copy(imgPath, path.join(chunkDir, `${i + 1}_${path.basename(imgPath)}`));
+				}
+			}
 
 			if (process.env['MAX_CHUNKS']) {
 				rawChunks = rawChunks.slice(0, Number(process.env['MAX_CHUNKS']));
@@ -165,7 +174,13 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 				rawChunks.map((chunk) =>
 					limit(async () => {
 						if (stateService.isChunkCompleted(pdfFile, chunk.index)) {
-							return stateService.getCompletedChunks(pdfFile)[chunk.index]!;
+							const cached: any = stateService.getCompletedChunks(pdfFile)[chunk.index]!;
+							// If old schema (array of pages), convert it on the fly or just handle properly
+							return cached.pages ? {
+								detected_class: cached.pages[0]?.detected_class,
+								detected_subject: cached.pages[0]?.detected_subject,
+								latex_content: cached.pages.map((p: any) => p.latex_content).join('\n\n')
+							} : cached;
 						}
 
 						setChunks((prev) =>
@@ -200,36 +215,96 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 				)
 			);
 
-			// Extract all detections after all chunks are processed
-			const allDetections = chunkResults
-				.flatMap(result => result.pages)
-				.map(p => (p.detected_class && p.detected_subject ? `Detected ${p.detected_class} - ${p.detected_subject}` : null))
-				.filter((d): d is string => d !== null);
+			const pdfBaseName = path.basename(pdfFile, '.pdf');
+			const pdfOutputDir = path.join(outputDir, pdfBaseName);
+			const texOutputDir = path.join(pdfOutputDir, 'tex');
+			await fs.ensureDir(texOutputDir);
 
-			setDetections(prev => Array.from(new Set([...prev, ...allDetections])));
+			const summaryEntries: { file: string; class: string; subject: string; firstQuestion: string }[] = [];
 
-			setStatus('Reassembling and stitching state...');
-			const finalDocs = await assemblyService.assemble(chunkResults);
+			for (let i = 0; i < rawChunks.length; i++) {
+				const chunk = rawChunks[i]!;
+				const result = chunkResults[i]!;
 
-			setStatus('Polishing LaTeX with AI...');
-			for (const doc of finalDocs) {
-				const content = await fs.readFile(doc.texPath, 'utf8');
-				const polished = await aiService.polishLatex(content);
+				const detectedClass = result.detected_class || 'UnknownClass';
+				const detectedSubject = result.detected_subject || 'UnknownSubject';
 
-				// Prepend header programmatically
-				const header = AssemblyService.generateHeader(doc.class, doc.subject);
-				await fs.writeFile(doc.texPath, header + polished);
-			}
+				setDetections(prev => [...prev, `${detectedClass} - ${detectedSubject}`]);
 
-			setCompilations(finalDocs.map((d) => ({ name: `${d.class}_${d.subject}.docx`, status: 'pending' })));
+				const sanitizedSubject = detectedSubject.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').trim();
+				const fileIndex = String(chunk.index).padStart(2, '0');
+				const baseFileName = `${fileIndex}-${sanitizedSubject}`;
 
-			setStatus('Compiling with Pandoc...');
-			for (const doc of finalDocs) {
-				await compilerService.compile(doc.texPath);
+				setStatus(`Saving ${detectedSubject}...`);
+				const cleanContent = AssemblyService.cleanLatex(result.latex_content);
+
+				const texPath = path.join(texOutputDir, `${baseFileName}.tex`);
+				const header = AssemblyService.generateHeader(detectedClass, detectedSubject);
+				await fs.writeFile(texPath, header + cleanContent);
+
+				const firstQuestion = AssemblyService.extractFirstQuestion(cleanContent);
+				summaryEntries.push({
+					file: `${baseFileName}.docx`,
+					class: detectedClass,
+					subject: detectedSubject,
+					firstQuestion
+				});
+
+				setCompilations(prev => [...prev, { name: `${pdfBaseName}/${baseFileName}.docx`, status: 'pending' }]);
+
+				setStatus(`Compiling ${detectedSubject} with Pandoc...`);
+				// We want the .docx in the pdfOutputDir, not texOutputDir
+				const docxPath = path.join(pdfOutputDir, `${baseFileName}.docx`);
+				await compilerService.compile(texPath, docxPath);
+
 				setCompilations((prev) =>
-					prev.map((c) => (c.name === `${doc.class}_${doc.subject}.docx` ? { ...c, status: 'done' } : c))
+					prev.map((c) => (c.name === `${pdfBaseName}/${baseFileName}.docx` ? { ...c, status: 'done' } : c))
 				);
 			}
+
+			// Generate SUMMARY.md
+			const summaryPath = path.join(pdfOutputDir, 'SUMMARY.md');
+			let summaryMd = `# Exam Subjects Found in: ${pdfFile}\n`;
+			summaryMd += `This file helps you find which subject is in which Word document. You can press **Ctrl + F** to search for a subject name or first question.\n\n---\n\n`;
+
+			for (const entry of summaryEntries) {
+				summaryMd += `### 📄 File: ${entry.file}\n`;
+				summaryMd += `- **Subject:** ${entry.subject}\n`;
+				summaryMd += `- **Class:** ${entry.class}\n`;
+				summaryMd += `- **First Question:** *"${entry.firstQuestion}"*\n\n`;
+				summaryMd += `---\n\n`;
+			}
+			await fs.writeFile(summaryPath, summaryMd);
+
+			// Update Master Summary
+			const allPdfs = stateService.getPdfList();
+			let masterMd = `# All Processed Exams Summary\n`;
+			masterMd += `This is a master list of every subject extracted from every PDF. Use **Ctrl+F** to find what you need.\n\n`;
+
+			for (const pName of allPdfs) {
+				const pState = stateService.getPdfState(pName);
+				masterMd += `## 📂 Source PDF: ${pName}\n\n`;
+
+				const completed = pState.completedChunks || {};
+				const sortedIdx = Object.keys(completed).sort((a, b) => Number(a) - Number(b));
+
+				for (const idxString of sortedIdx) {
+					const idx = Number(idxString);
+					const chnk = completed[idx]!;
+					const subj = chnk.detected_subject || 'Unknown';
+					const clss = chnk.detected_class || 'Unknown';
+					const sSubj = subj.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').trim();
+					const bName = `${String(idx).padStart(2, '0')}-${sSubj}.docx`;
+					const fQ = AssemblyService.extractFirstQuestion(chnk.latex_content);
+
+					masterMd += `### 📄 ${bName}\n`;
+					masterMd += `- **Class:** ${clss}\n`;
+					masterMd += `- **Subject:** ${subj}\n`;
+					masterMd += `- **Question 1:** *"${fQ}"*\n\n`;
+				}
+				masterMd += `---\n\n`;
+			}
+			await fs.writeFile(path.join(outputDir, 'SUMMARY.md'), masterMd);
 		}
 
 		setStatus('Success!');
@@ -269,7 +344,7 @@ export default function App({ inputDir, outputDir, recompile }: Props) {
 
 			{chunks.length > 0 && (
 				<Box flexDirection="column" marginBottom={1}>
-					<Text bold>🚀 Concurrent Extraction Engine Running ({process.env['CHUNK_SIZE'] || '10'} pages/chunk):</Text>
+					<Text bold>🚀 Concurrent Extraction Engine Running (Subject-based splitting):</Text>
 					{chunks.map((chunk) => (
 						<Box key={chunk.index}>
 							<Text>   Chunk {chunk.index} (Pgs {chunk.pages}):   </Text>

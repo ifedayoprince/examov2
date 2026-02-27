@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { fromPath } from 'pdf2pic';
+import sharp from 'sharp';
 
 export interface Chunk {
     index: number;
@@ -40,14 +41,69 @@ export class PdfService {
             saveFilename: 'page',
             savePath: outputDir,
             format: 'png',
-            width: 2480, // High res for Gemini vision
-            height: 3508,
         };
 
         const convert = fromPath(pdfPath, options);
         const results = await convert.bulk(-1, { responseType: 'image' });
 
         return results.map((result) => result.path!);
+    }
+
+    async isBoundaryPage(imagePath: string): Promise<boolean> {
+        try {
+            const { channels } = await sharp(imagePath).stats();
+            // Average mean across R, G, B channels
+            const mean = channels.reduce((acc, c) => acc + c.mean, 0) / channels.length;
+            
+            // Average standard deviation across channels
+            const stddev = channels.reduce((acc, c) => acc + c.stdev, 0) / channels.length;
+
+            // A plain white page will have high brightness (mean > 200) 
+            // and very low variance/stddev (standard deviation < 30)
+            // Lighting might vary, so these values are heuristic but generally safe for "plain white paper"
+            return mean > 200 && stddev < 30;
+        } catch (error) {
+            console.error(`Error analyzing image ${imagePath}:`, error);
+            return false;
+        }
+    }
+
+    async splitByBoundary(imagePaths: string[]): Promise<Chunk[]> {
+        const chunks: Chunk[] = [];
+        let currentImagePaths: string[] = [];
+        let currentPageNumbers: number[] = [];
+        let chunkIndex = 1;
+
+        for (let i = 0; i < imagePaths.length; i++) {
+            const path = imagePaths[i]!;
+            const isBoundary = await this.isBoundaryPage(path);
+
+            if (isBoundary) {
+                if (currentImagePaths.length > 0) {
+                    chunks.push({
+                        index: chunkIndex++,
+                        imagePaths: currentImagePaths,
+                        pageNumbers: currentPageNumbers,
+                    });
+                    currentImagePaths = [];
+                    currentPageNumbers = [];
+                }
+            } else {
+                currentImagePaths.push(path);
+                currentPageNumbers.push(i + 1);
+            }
+        }
+
+        // Push final chunk if any
+        if (currentImagePaths.length > 0) {
+            chunks.push({
+                index: chunkIndex,
+                imagePaths: currentImagePaths,
+                pageNumbers: currentPageNumbers,
+            });
+        }
+
+        return chunks;
     }
 
     chunkImages(imagePaths: string[], chunkSize: number): Chunk[] {

@@ -77,4 +77,8 @@ export class StateService {
     isChunkCompleted(pdfName: string, chunkIndex: number): boolean {
         return !!this.getPdfState(pdfName).completedChunks[chunkIndex];
     }
+
+    getPdfList(): string[] {
+        return Object.keys(this.state.pdfs);
+    }
 }

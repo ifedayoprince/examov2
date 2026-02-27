@@ -1,6 +1,6 @@
 .env*
-output
-temp
-input
+output*
+temp*
+input*
 node_modules
 dist

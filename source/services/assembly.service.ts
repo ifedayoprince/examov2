@@ -1,7 +1,3 @@
-import path from 'node:path';
-import fs from 'fs-extra';
-import type { AiResult } from './ai.service.js';
-
 export interface FinalDocument {
     class: string;
     subject: string;
@@ -9,64 +5,7 @@ export interface FinalDocument {
 }
 
 export class AssemblyService {
-    private readonly outputDir: string;
-
-    constructor(outputDir: string) {
-        this.outputDir = outputDir;
-    }
-
-    async assemble(results: AiResult[]): Promise<FinalDocument[]> {
-        // Flatten and sort by page number (CRITICAL for state machine)
-        const allPages = results
-            .flatMap((r) => r.pages)
-            .sort((a, b) => a.page_number - b.page_number);
-
-        let currentClass = 'UnknownClass';
-        let currentSubject = 'UnknownSubject';
-        const documents: Map<string, string[]> = new Map();
-
-        for (const page of allPages) {
-            if (page.is_new_section) {
-                // If it's marked as a new section but missing names, try to update if present
-                if (page.detected_class) currentClass = this.sanitize(page.detected_class);
-                if (page.detected_subject) currentSubject = this.sanitize(page.detected_subject);
-            } else if (page.detected_class && page.detected_subject) {
-                // Check if this page introduces a new exam/header
-                currentClass = this.sanitize(page.detected_class);
-                currentSubject = this.sanitize(page.detected_subject);
-            }
-
-            const key = `${currentClass}/${currentSubject}`;
-            if (!documents.has(key)) {
-                documents.set(key, []);
-            }
-            documents.get(key)!.push(page.latex_content);
-        }
-
-        const finalDocs: FinalDocument[] = [];
-
-        for (const [key, contents] of documents.entries()) {
-            const parts = key.split('/');
-            const cls = parts[0] || 'UnknownClass';
-            const subj = parts[1] || 'UnknownSubject';
-
-            const classDir = path.join(this.outputDir, cls);
-            await fs.ensureDir(classDir);
-
-            const texFileName = `${subj}.tex`;
-            const texPath = path.join(classDir, texFileName);
-
-            // Join and clean
-            const rawContent = contents.join('\n\n');
-            const cleanContent = AssemblyService.cleanLatex(rawContent);
-
-            await fs.writeFile(texPath, cleanContent);
-
-            finalDocs.push({ class: cls, subject: subj, texPath });
-        }
-
-        return finalDocs;
-    }
+    constructor(_: string) { }
 
     public static cleanLatex(content: string): string {
         return content
@@ -85,20 +24,26 @@ export class AssemblyService {
     }
 
     public static generateHeader(cls: string, subj: string): string {
-        const displaySubj = subj.replace(/_/g, ' ');
-        const displayCls = cls.replace(/_/g, ' ');
+        const displaySubj = (subj || 'Unknown Subject').replace(/_/g, ' ');
+        const displayCls = (cls || 'Unknown Class').replace(/_/g, ' ');
 
         return [
-            '\\begin{left}\\textbf{NAME: ____________________________}\\end{left}',
-            `\\begin{left}\\textbf{\\uppercase{SUBJECT: ${displaySubj}}}\\end{left}`,
-            `\\begin{left}\\textbf{\\uppercase{CLASS: ${displayCls}}}\\end{left}`,
-            '\\begin{left}\\textbf{DATE: ____________________________}\\end{left}',
+            '\\begin{flushleft}\\textbf{NAME: ____________________________}\\end{flushleft}',
+            `\\begin{flushleft}\\textbf{\\uppercase{SUBJECT: ${displaySubj}}}\\end{flushleft}`,
+            `\\begin{flushleft}\\textbf{\\uppercase{CLASS: ${displayCls}}}\\end{flushleft}`,
+            '\\begin{flushleft}\\textbf{DATE: ____________________________}\\end{flushleft}',
             '',
             ''
         ].join('\n');
     }
 
-    private sanitize(name: string): string {
-        return name.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').trim();
+    public static extractFirstQuestion(latex: string): string {
+        // Look for the first \item that isn't just a nested list opener
+        // This is a naive but effective way to get the gist of the first question
+        const match = latex.match(/\\item\s+([^\\{[]+)/);
+        if (match && match[1]) {
+            return match[1].trim().substring(0, 100) + (match[1].trim().length > 100 ? '...' : '');
+        }
+        return 'No question text detected.';
     }
 }

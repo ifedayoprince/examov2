@@ -8,8 +8,8 @@ export class CompilerService {
         this.templatePath = templatePath;
     }
 
-    async compile(texPath: string): Promise<string> {
-        const docxPath = texPath.replace('.tex', '.docx');
+    async compile(texPath: string, outputPath?: string): Promise<string> {
+        const docxPath = outputPath || texPath.replace('.tex', '.docx');
         const args = [
             '-f',
             'latex',

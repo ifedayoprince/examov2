@@ -9,9 +9,11 @@
 - **🧠 Intelligent Extraction**: Uses `gemini-1.5-flash` to transcribe exams with 100% fidelity, preserving intentional typos and academic nuances.
 - **⚡ High-Concurrency Pipeline**: Map-Reduce style processing that chunks PDFs and processes them in parallel for maximum speed.
 - **🎨 LaTeX-Grade Formatting**: Generates high-quality LaTeX code for complex structures (nested lists, phonetics, formulas) before compiling to Word.
-- **🛠️ Automated Reassembly**: Intelligently stitches content across page breaks and organizes output by Class and Subject.
+- **🛠️ Automated Reassembly**: Intelligently organizes output by source PDF, preserving aspect ratios and ensuring perfect document structure.
+- **📄 Sequential Organization**: Files are named sequentially (e.g., `01-English.docx`) and grouped by their source PDF for easy management.
+- **📊 Detailed Summaries**: Generates a `SUMMARY.md` for each PDF and a master `SUMMARY.md` at the output root for quick reference and searchability.
 - **📟 Premium TUI**: A beautiful, interactive terminal user interface built with `ink`.
-- **🔄 Smart Recompilation**: Quick-fix mode to polish and re-compile existing LaTeX files without re-running the full extraction.
+- **🔄 Smart Recompilation**: Quick-fix mode to re-compile existing LaTeX files without re-running the full extraction.
 
 ---
 
@@ -56,7 +58,7 @@ Create a `.env` file in the root directory:
 OPENROUTER_API_KEY=your_api_key_here
 MODEL_NAME=google/gemini-3-flash-preview
 CONCURRENCY_LIMIT=5
-CHUNK_SIZE=10
+# MAX_CHUNKS=0 # set to a number to limit processing for testing
 ```
 
 ---
@@ -71,30 +73,33 @@ Place your PDFs in the `input/` folder and run:
 npm run build && node dist/cli.js
 ```
 
-Or specify custom directories:
-
-```bash
-node dist/cli.js --input ./my_exams --output ./final_results
-```
-
 ### Recompile Mode
 
-If you want to polish and re-compile existing `.tex` files in the output directory:
+To re-compile existing `.tex` files in the output directory:
 
 ```bash
 node dist/cli.js --recompile
+```
+
+### Migration Script
+
+If you have an old output structure and want to convert it to the new PDF-grouped structure with sequential naming:
+
+```bash
+node migrate.js
 ```
 
 ---
 
 ## 🔄 The Pipeline
 
-1. **Ingestion**: PDFs are converted into high-resolution JPEGs.
-2. **Chunking**: Images are grouped into logical batches for parallel processing.
+1. **Ingestion**: PDFs are converted into high-resolution images while **preserving aspect ratio**.
+2. **Chunking**: Images are grouped into logical subjects based on blank page boundaries.
 3. **Map (Extraction)**: Gemini Vision extracts text and structures it into LaTeX-formatted JSON.
-4. **Reduce (Assembly)**: The system sorts pages, handles state (Class/Subject), and stitches the LaTeX content.
-5. **Polish**: A final AI pass ensures consistent formatting and cleans up LaTeX artifacts.
-6. **Compilation**: Pandoc uses a custom `template.docx` to generate the final Word documents.
+4. **Reduce (Assembly)**: The system groups files by source PDF and saves raw `.tex` files in a `tex/` subdirectory.
+5. **Clean & Save**: A local cleaning process removes LaTeX artifacts and prepends standard exam headers.
+6. **Compilation**: Pandoc uses a custom `template.docx` to generate sequential Word documents (e.g., `01-Subject.docx`).
+7. **Summary**: Generates local and master `SUMMARY.md` files with first-question previews for easy searchability.
 
 ---
 

@@ -5,15 +5,9 @@ import { z } from 'zod';
 import type { Chunk } from './pdf.service.js';
 
 const aiResultSchema = z.object({
-    pages: z.array(
-        z.object({
-            page_number: z.number(),
-            is_new_section: z.boolean(),
-            detected_class: z.string().nullable(),
-            detected_subject: z.string().nullable(),
-            latex_content: z.string(),
-        })
-    ),
+    detected_class: z.string().nullable(),
+    detected_subject: z.string().nullable(),
+    latex_content: z.string(),
 });
 
 export type AiResult = z.infer<typeof aiResultSchema>;
@@ -126,9 +120,7 @@ export class AiService {
                         content: [
                             {
                                 type: 'text',
-                                text: `Process these exam pages (Page numbers: ${chunk.pageNumbers.join(
-                                    ', '
-                                )}). Extract the handwritten text into LaTeX following the system instructions.`,
+                                text: `Process these scanned handwritten images as a single complete exam. Extract the text into LaTeX following the system instructions.`,
                             },
                             ...imageUrls.map((url) => ({
                                 type: 'image' as const,
@@ -157,7 +149,8 @@ Strictly follow these rules:
 2. Merge any split questions where the text is in one item and options are in another.
 3. Remove all \\setcounter{enumi}{...} lines and [resume] options from enumerate environments.
 4. Ensure every question is punctuated properly.
-5. Return ONLY the polished LaTeX code. NO markdown code blocks, NO preamble, NO comments.`,
+5. MANDATORY: Every option in an enumerate bucket must start with a CAPITAL letter.
+6. Return ONLY the polished LaTeX code. NO markdown code blocks, NO preamble, NO comments.`,
                 abortSignal: controller.signal,
                 messages: [
                     {
