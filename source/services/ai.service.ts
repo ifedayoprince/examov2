@@ -135,33 +135,4 @@ export class AiService {
             clearTimeout(timeoutId);
         }
     }
-
-    async polishLatex(content: string): Promise<string> {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout
-
-        try {
-            const { text } = await generateText({
-                model: this.openai(this.modelName),
-                system: `You are a LaTeX formatting expert. Your task is to polish the provided LaTeX code of an exam paper. 
-Strictly follow these rules:
-1. Every section (e.g., SECTION A) must contain exactly ONE parent \\begin{enumerate} block. 
-2. Merge any split questions where the text is in one item and options are in another.
-3. Remove all \\setcounter{enumi}{...} lines and [resume] options from enumerate environments.
-4. Ensure every question is punctuated properly.
-5. MANDATORY: Every option in an enumerate bucket must start with a CAPITAL letter.
-6. Return ONLY the polished LaTeX code. NO markdown code blocks, NO preamble, NO comments.`,
-                abortSignal: controller.signal,
-                messages: [
-                    {
-                        role: 'user',
-                        content: `Please polish this LaTeX exam content. Ensure it is one continuous list per section:\n\n${content}`,
-                    },
-                ],
-            });
-            return text;
-        } finally {
-            clearTimeout(timeoutId);
-        }
-    }
 }

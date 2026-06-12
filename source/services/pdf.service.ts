@@ -79,15 +79,13 @@ export class PdfService {
             const isBoundary = await this.isBoundaryPage(path);
 
             if (isBoundary) {
-                if (currentImagePaths.length > 0) {
-                    chunks.push({
-                        index: chunkIndex++,
-                        imagePaths: currentImagePaths,
-                        pageNumbers: currentPageNumbers,
-                    });
-                    currentImagePaths = [];
-                    currentPageNumbers = [];
-                }
+                chunks.push({
+                    index: chunkIndex++,
+                    imagePaths: [path, ...currentImagePaths],
+                    pageNumbers: [i + 1, ...currentPageNumbers],
+                });
+                currentImagePaths = [];
+                currentPageNumbers = [];
             } else {
                 currentImagePaths.push(path);
                 currentPageNumbers.push(i + 1);

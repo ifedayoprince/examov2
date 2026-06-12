@@ -15,6 +15,7 @@ const cli = meow(
 		--input, -i       Input directory containing PDFs (default: ./input)
 		--output, -o      Output directory for DOCX files (default: ./output)
 		--recompile, -r   Recompile all existing .tex files in output directory
+		--path, -p        Path to a specific .tex file to recompile
 
 	Examples
 	  $ examov2 --input=./exam_pdfs --output=./processed
@@ -38,8 +39,12 @@ const cli = meow(
 				alias: 'r',
 				default: false,
 			},
+			path: {
+				type: 'string',
+				alias: 'p',
+			},
 		},
 	},
 );
 
-render(<App inputDir={cli.flags.input} outputDir={cli.flags.output} recompile={cli.flags.recompile} />);
+render(<App inputDir={cli.flags.input} outputDir={cli.flags.output} recompile={cli.flags.recompile} texPath={cli.flags.path} />);
