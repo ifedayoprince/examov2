@@ -41,17 +41,47 @@ export class PdfService {
             saveFilename: 'page',
             savePath: outputDir,
             format: 'png',
+            width: 2048,
+            height: 2048,
+            preserveAspectRatio: true,
         };
 
         const convert = fromPath(pdfPath, options);
         const results = await convert.bulk(-1, { responseType: 'image' });
+        const paths = results.map((result) => result.path!);
 
-        return results.map((result) => result.path!);
+        for (const imgPath of paths) {
+            const isBoundary = await this.isBoundaryPage(imgPath);
+            const inputBuffer = await fs.readFile(imgPath);
+            const img = sharp(inputBuffer);
+            const metadata = await img.metadata();
+
+            let processed = img;
+            let shouldProcess = false;
+
+            // Rotate portrait to landscape if it's NOT a boundary page
+            if (!isBoundary && metadata.width && metadata.height && metadata.height > metadata.width) {
+                processed = processed.rotate(90);
+                shouldProcess = true;
+            }
+
+            // Downscale to ensure the largest side of the image is 1024px
+            processed = processed.resize(1024, 1024, { fit: 'inside', withoutEnlargement: true });
+            shouldProcess = true;
+
+            if (shouldProcess) {
+                const outputBuffer = await processed.toBuffer();
+                await fs.writeFile(imgPath, outputBuffer);
+            }
+        }
+
+        return paths;
     }
 
     async isBoundaryPage(imagePath: string): Promise<boolean> {
         try {
-            const { channels } = await sharp(imagePath).stats();
+            const buffer = await fs.readFile(imagePath);
+            const { channels } = await sharp(buffer).stats();
             // Average mean across R, G, B channels
             const mean = channels.reduce((acc, c) => acc + c.mean, 0) / channels.length;
             
@@ -59,9 +89,9 @@ export class PdfService {
             const stddev = channels.reduce((acc, c) => acc + c.stdev, 0) / channels.length;
 
             // A plain white page will have high brightness (mean > 200) 
-            // and very low variance/stddev (standard deviation < 30)
+            // and very low variance/stddev (standard deviation < 25)
             // Lighting might vary, so these values are heuristic but generally safe for "plain white paper"
-            return mean > 200 && stddev < 30;
+            return mean > 200 && stddev < 25;
         } catch (error) {
             console.error(`Error analyzing image ${imagePath}:`, error);
             return false;
@@ -98,20 +128,6 @@ export class PdfService {
                 index: chunkIndex,
                 imagePaths: currentImagePaths,
                 pageNumbers: currentPageNumbers,
-            });
-        }
-
-        return chunks;
-    }
-
-    chunkImages(imagePaths: string[], chunkSize: number): Chunk[] {
-        const chunks: Chunk[] = [];
-        for (let i = 0; i < imagePaths.length; i += chunkSize) {
-            const slice = imagePaths.slice(i, i + chunkSize);
-            chunks.push({
-                index: Math.floor(i / chunkSize) + 1,
-                imagePaths: slice,
-                pageNumbers: slice.map((_, idx) => i + idx + 1),
             });
         }
 

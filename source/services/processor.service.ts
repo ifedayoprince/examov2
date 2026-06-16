@@ -1,8 +1,8 @@
 import fs from 'fs-extra';
 import path from 'node:path';
 import pLimit from 'p-limit';
-import { PdfService } from './pdf.service.js';
-import { AiService } from './ai.service.js';
+import { PdfService, type Chunk } from './pdf.service.js';
+import { AiService, type AiResult } from './ai.service.js';
 import { AssemblyService } from './assembly.service.js';
 import { CompilerService } from './compiler.service.js';
 import { StateService } from './state.service.js';
@@ -80,57 +80,76 @@ export class ProcessorService {
 				}
 			}
 
-			if (process.env['MAX_CHUNKS']) {
-				rawChunks = rawChunks.slice(0, Number(process.env['MAX_CHUNKS']));
+			if (process.env['TEST_EXAMS']) {
+				const testIndices = process.env['TEST_EXAMS'].split(',').map((s) => Number(s.trim()));
+				rawChunks = rawChunks.filter((c) => testIndices.includes(c.index));
 			}
 
 			this.callbacks.onChunksChange?.(
 				rawChunks.map((c) => ({
 					index: c.index,
-					pages: `${c.pageNumbers[0]}-${c.pageNumbers[c.pageNumbers.length - 1]}`,
+					pages: `${Math.min(...c.pageNumbers)}-${Math.max(...c.pageNumbers)}`,
 					progress: stateService.isChunkCompleted(pdfFile, c.index) ? 1 : 0,
 					status: stateService.isChunkCompleted(pdfFile, c.index) ? 'done' : 'waiting',
 				}))
 			);
 
-			const limit = pLimit(parseInt(process.env['CONCURRENCY_LIMIT'] || '5', 10));
+			const pendingChunks = rawChunks.filter((c) => !stateService.isChunkCompleted(pdfFile, c.index));
 
-			const chunkResults = await Promise.all(
-				rawChunks.map((chunk) =>
-					limit(async () => {
-						if (stateService.isChunkCompleted(pdfFile, chunk.index)) {
-							const cached: any = stateService.getCompletedChunks(pdfFile)[chunk.index]!;
-							// If old schema (array of pages), convert it on the fly or just handle properly
-							return cached.pages ? {
-								detected_class: cached.pages[0]?.detected_class,
-								detected_subject: cached.pages[0]?.detected_subject,
-								latex_content: cached.pages.map((p: any) => p.latex_content).join('\n\n')
-							} : cached;
+			// Group pending chunks into batches
+			const batchSize = Number(process.env['BATCH_SIZE'] || '3');
+			const chunkBatches: Chunk[][] = [];
+			for (let i = 0; i < pendingChunks.length; i += batchSize) {
+				chunkBatches.push(pendingChunks.slice(i, i + batchSize));
+			}
+
+			const batchLimit = pLimit(parseInt(process.env['BATCH_CONCURRENCY_LIMIT'] || '1', 10));
+
+			await Promise.all(
+				chunkBatches.map((batch) =>
+					batchLimit(async () => {
+						for (const chunk of batch) {
+							this.callbacks.onChunkProgress?.(chunk.index, 0.1, 'processing');
 						}
 
-						this.callbacks.onChunkProgress?.(chunk.index, 0.1, 'processing');
-
 						try {
-							const result = await aiService.processChunk(chunk, {
-								onProgress: (progress) => {
-									this.callbacks.onChunkProgress?.(chunk.index, progress, 'processing');
+							const results = await aiService.processBatch(batch, {
+								onProgress: (chunkIndex, progress) => {
+									this.callbacks.onChunkProgress?.(chunkIndex, progress, 'processing');
 								},
 								getCache: (p) => stateService.getValidImageUrl(pdfFile, p),
 								setCache: (p, url) => stateService.saveUploadedImageUrl(pdfFile, p, url),
 							});
 
-							await stateService.saveChunkResult(pdfFile, chunk.index, result);
+							for (let i = 0; i < batch.length; i++) {
+								const chunk = batch[i]!;
+								const result = results[i]!;
 
-							this.callbacks.onChunkProgress?.(chunk.index, 1, 'done');
-
-							return result;
+								await stateService.saveChunkResult(pdfFile, chunk.index, result);
+								this.callbacks.onChunkProgress?.(chunk.index, 1, 'done');
+							}
 						} catch (error) {
-							this.callbacks.onChunkProgress?.(chunk.index, 0, 'error');
+							for (const chunk of batch) {
+								this.callbacks.onChunkProgress?.(chunk.index, 0, 'error');
+							}
 							throw error;
 						}
 					})
 				)
 			);
+
+			// Retrieve all chunk results (either from stateService if previously cached/completed, or newly completed)
+			const chunkResults: AiResult[] = [];
+			for (let i = 0; i < rawChunks.length; i++) {
+				const chunk = rawChunks[i]!;
+				const cached: any = stateService.getCompletedChunks(pdfFile)[chunk.index]!;
+				const result = cached.pages ? {
+					detected_class: cached.pages[0]?.detected_class,
+					detected_subject: cached.pages[0]?.detected_subject,
+					latex_content: cached.pages.map((p: any) => p.latex_content).join('\n\n')
+				} : cached;
+				chunkResults.push(result);
+			}
 
 			const pdfBaseName = path.basename(pdfFile, '.pdf');
 			const pdfOutputDir = path.join(this.outputDir, pdfBaseName);

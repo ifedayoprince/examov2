@@ -31,10 +31,10 @@ async function testBoundary(imagePath) {
 
         console.log('--- Results ---');
         console.log(`Mean Brightness: ${mean.toFixed(2)} (Threshold: > 200)`);
-        console.log(`Standard Deviation: ${stddev.toFixed(2)} (Threshold: < 30)`);
+        console.log(`Standard Deviation: ${stddev.toFixed(2)} (Threshold: < 25)`);
         console.log('---------------');
 
-        const isBoundary = mean > 200 && stddev < 30;
+        const isBoundary = mean > 200 && stddev < 25;
 
         if (isBoundary) {
             console.log('✅ Result: BOUNDARY DETECTED (Plain white/blank page)');
