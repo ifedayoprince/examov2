@@ -16,10 +16,12 @@ const cli = meow(
 		--output, -o      Output directory for DOCX files (default: ./output)
 		--recompile, -r   Recompile all existing .tex files in output directory
 		--path, -p        Path to a specific .tex file to recompile
+		--rebuild, -b     Reconstruct .tex and .docx files from offline saved state JSON file
 
 	Examples
 	  $ examov2 --input=./exam_pdfs --output=./processed
 	  $ examov2 --recompile
+	  $ examov2 --rebuild
 `,
 	{
 		importMeta: import.meta,
@@ -43,8 +45,15 @@ const cli = meow(
 				type: 'string',
 				alias: 'p',
 			},
+			rebuild: {
+				type: 'boolean',
+				alias: 'b',
+				default: false,
+			},
 		},
 	},
 );
 
-render(<App inputDir={cli.flags.input} outputDir={cli.flags.output} recompile={cli.flags.recompile} texPath={cli.flags.path} />);
+render(<App 
+	inputDir={cli.flags.input}
+	outputDir={cli.flags.output} recompile={cli.flags.recompile} texPath={cli.flags.path} rebuild={cli.flags.rebuild} />);

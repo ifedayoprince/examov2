@@ -12,6 +12,7 @@ export interface ChunkStatus {
 	pages: string;
 	progress: number;
 	status: 'waiting' | 'processing' | 'done' | 'error';
+	batch?: number;
 }
 
 export interface ProcessorCallbacks {
@@ -85,19 +86,21 @@ export class ProcessorService {
 				rawChunks = rawChunks.filter((c) => testIndices.includes(c.index));
 			}
 
+			const batchSize = Number(process.env['BATCH_SIZE'] || '3');
+
 			this.callbacks.onChunksChange?.(
-				rawChunks.map((c) => ({
+				rawChunks.map((c, idx) => ({
 					index: c.index,
 					pages: `${Math.min(...c.pageNumbers)}-${Math.max(...c.pageNumbers)}`,
 					progress: stateService.isChunkCompleted(pdfFile, c.index) ? 1 : 0,
 					status: stateService.isChunkCompleted(pdfFile, c.index) ? 'done' : 'waiting',
+					batch: Math.floor(idx / batchSize) + 1,
 				}))
 			);
 
 			const pendingChunks = rawChunks.filter((c) => !stateService.isChunkCompleted(pdfFile, c.index));
 
 			// Group pending chunks into batches
-			const batchSize = Number(process.env['BATCH_SIZE'] || '3');
 			const chunkBatches: Chunk[][] = [];
 			for (let i = 0; i < pendingChunks.length; i += batchSize) {
 				chunkBatches.push(pendingChunks.slice(i, i + batchSize));

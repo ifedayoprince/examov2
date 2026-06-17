@@ -12,9 +12,10 @@ type Props = {
 	outputDir: string;
 	recompile?: boolean;
 	texPath?: string;
+	rebuild?: boolean;
 };
 
-export default function App({ inputDir, outputDir, recompile, texPath }: Props) {
+export default function App({ inputDir, outputDir, recompile, texPath, rebuild }: Props) {
 	const [status, setStatus] = useState<string>('Initializing...');
 	const [currentPdf, setCurrentPdf] = useState<string>('');
 	const [totalPages, setTotalPages] = useState<number>(0);
@@ -32,7 +33,7 @@ export default function App({ inputDir, outputDir, recompile, texPath }: Props) 
 			}
 		}, 1000);
 
-		const task = (recompile || texPath) ? recompileAll(texPath) : processPdfs();
+		const task = rebuild ? rebuildFromState() : (recompile || texPath) ? recompileAll(texPath) : processPdfs();
 
 		task.then(() => {
 			setIsFinished(true);
@@ -41,6 +42,89 @@ export default function App({ inputDir, outputDir, recompile, texPath }: Props) 
 
 		return () => clearInterval(interval);
 	}, []);
+
+	const rebuildFromState = async () => {
+		const templatePath = './files/template.docx';
+		const compilerService = new CompilerService(templatePath);
+
+		setStatus('Reading state file...');
+
+		const stateFilePath = path.join(outputDir, '.examo_state.json');
+		if (!(await fs.pathExists(stateFilePath))) {
+			setStatus(`Error: No state file found at ${stateFilePath}`);
+			return;
+		}
+
+		let state: any;
+		try {
+			state = await fs.readJson(stateFilePath);
+		} catch {
+			setStatus('Error: Failed to parse state file.');
+			return;
+		}
+
+		const pdfNames: string[] = Object.keys(state.pdfs || {});
+		if (pdfNames.length === 0) {
+			setStatus('No PDFs found in state file.');
+			return;
+		}
+
+		for (const pdfName of pdfNames) {
+			const pdfState = state.pdfs[pdfName];
+			const completedChunks: Record<string, any> = pdfState?.completedChunks || {};
+			const sortedIndices = Object.keys(completedChunks).sort((a, b) => Number(a) - Number(b));
+
+			if (sortedIndices.length === 0) continue;
+
+			const pdfBaseName = path.basename(pdfName, '.pdf');
+			const pdfOutputDir = path.join(outputDir, pdfBaseName);
+			const texOutputDir = path.join(pdfOutputDir, 'tex');
+			await fs.ensureDir(texOutputDir);
+
+			for (const idxStr of sortedIndices) {
+				const idx = Number(idxStr);
+				const raw: any = completedChunks[idx];
+
+				// Support both old flat shape and new batched shape
+				let detectedClass: string;
+				let detectedSubject: string;
+				let latexContent: string;
+
+				if (raw.pages) {
+					detectedClass = raw.pages[0]?.detected_class || 'UnknownClass';
+					detectedSubject = raw.pages[0]?.detected_subject || 'UnknownSubject';
+					latexContent = raw.pages.map((p: any) => p.latex_content).join('\n\n');
+				} else {
+					detectedClass = raw.detected_class || 'UnknownClass';
+					detectedSubject = raw.detected_subject || 'UnknownSubject';
+					latexContent = raw.latex_content || '';
+				}
+
+				const sanitizedSubject = detectedSubject.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').trim();
+				const fileIndex = String(idx).padStart(2, '0');
+				const baseFileName = `${fileIndex}-${sanitizedSubject}`;
+
+				setStatus(`Rebuilding ${detectedSubject} (${detectedClass})...`);
+
+				const cleanContent = AssemblyService.cleanLatex(latexContent);
+				const header = AssemblyService.generateHeader(detectedClass, detectedSubject);
+				const texFilePath = path.join(texOutputDir, `${baseFileName}.tex`);
+				await fs.writeFile(texFilePath, header + cleanContent);
+
+				const compilationLabel = `${pdfBaseName}/${baseFileName}.docx`;
+				setCompilations((prev) => [...prev, { name: compilationLabel, status: 'pending' }]);
+
+				const docxPath = path.join(pdfOutputDir, `${baseFileName}.docx`);
+				await compilerService.compile(texFilePath, docxPath);
+
+				setCompilations((prev) =>
+					prev.map((c) => (c.name === compilationLabel ? { ...c, status: 'done' } : c))
+				);
+			}
+		}
+
+		setStatus('Rebuild from state complete!');
+	};
 
 	const recompileAll = async (specificPath?: string) => {
 		const templatePath = './files/template.docx';
@@ -164,29 +248,53 @@ export default function App({ inputDir, outputDir, recompile, texPath }: Props) 
 				</Box>
 			)}
 
-			{recompile && (
+			{(recompile || rebuild) && (
 				<Box flexDirection="column" marginBottom={1}>
 					<Box>
-						<Text>🛠️  {status} </Text>
-						{!status.includes('Success') && <Spinner />}
+						<Text>{rebuild ? '🔁' : '🛠️'}  {status} </Text>
+						{!status.includes('Success') && !status.includes('complete') && !status.includes('Error') && <Spinner />}
 					</Box>
 				</Box>
 			)}
 
-			{chunks.length > 0 && (
-				<Box flexDirection="column" marginBottom={1}>
-					<Text bold>🚀 Concurrent Extraction Engine Running (Subject-based splitting):</Text>
-					{chunks.map((chunk) => (
-						<Box key={chunk.index}>
-							<Text>   Chunk {chunk.index} (Pgs {chunk.pages}):   </Text>
-							<Box width={30}>
-								<ProgressBar value={chunk.progress} />
-							</Box>
-							<Text> {Math.floor(chunk.progress * 100)}% [{chunk.status === 'done' ? '✓' : chunk.status}]</Text>
-						</Box>
-					))}
-				</Box>
-			)}
+			{chunks.length > 0 && (() => {
+				// Group chunks by batch number
+				const batchGroups = chunks.reduce<Record<number, typeof chunks>>((acc, chunk) => {
+					const key = chunk.batch ?? 1;
+					if (!acc[key]) acc[key] = [];
+					acc[key]!.push(chunk);
+					return acc;
+				}, {});
+				const batchKeys = Object.keys(batchGroups).map(Number).sort((a, b) => a - b);
+
+				return (
+					<Box flexDirection="column" marginBottom={1}>
+						<Text bold>🚀 Concurrent Extraction Engine Running (Subject-based splitting):</Text>
+						{batchKeys.map((batchNum) => {
+							const batchChunks = batchGroups[batchNum]!;
+							const allDone = batchChunks.every((c) => c.status === 'done');
+							const anyProcessing = batchChunks.some((c) => c.status === 'processing');
+							return (
+								<Box key={batchNum} flexDirection="column">
+									<Text color="yellow">
+										{'   '}📦 Batch {batchNum}{' '}
+										{allDone ? <Text color="green">[✓ sent]</Text> : anyProcessing ? <Text color="cyan">[sending...]</Text> : <Text color="gray">[queued]</Text>}
+									</Text>
+									{batchChunks.map((chunk) => (
+										<Box key={chunk.index}>
+											<Text>      Chunk {chunk.index} (Pgs {chunk.pages}):   </Text>
+											<Box width={30}>
+												<ProgressBar value={chunk.progress} />
+											</Box>
+											<Text> {Math.floor(chunk.progress * 100)}% [{chunk.status === 'done' ? '✓' : chunk.status}]</Text>
+										</Box>
+									))}
+								</Box>
+							);
+						})}
+					</Box>
+				);
+			})()}
 
 			{detections.length > 0 && chunks.every(c => c.status === 'done') && (
 				<Box flexDirection="column" marginBottom={1}>

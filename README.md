@@ -50,15 +50,24 @@
 
 ---
 
-## ⚙️ Configuration
-
-Create a `.env` file in the root directory:
+Create a `.env` file in the root directory and configure the variables:
 
 ```env
+# OpenRouter API Key for authenticating AI model requests
 OPENROUTER_API_KEY=your_api_key_here
+
+# The model name to use for image processing & transcription
 MODEL_NAME=google/gemini-3-flash-preview
-CONCURRENCY_LIMIT=5
-# MAX_CHUNKS=0 # set to a number to limit processing for testing
+
+# How many batches to run concurrently (simultaneously)
+BATCH_CONCURRENCY_LIMIT=5
+
+# How many distinct exams/chunks to group and send together in a single API call.
+# E.g., BATCH_SIZE=3 bundles 3 exams into 1 request to minimize total API calls and overhead.
+BATCH_SIZE=3
+
+# Optional: Comma-separated indices of specific exams/chunks to process (for testing purposes)
+# TEST_EXAMS=2
 ```
 
 ---
